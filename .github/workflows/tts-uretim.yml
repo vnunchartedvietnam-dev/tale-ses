@@ -1,0 +1,58 @@
+name: TTS Uretim
+# Tale anlatıcı TTS (27 Ekim). İş ŞİFRELİ gelir (is.enc), sonuç ŞİFRELİ gider (sonuc-N.enc). Günlüğe metin yazılmaz.
+on:
+  push:
+    branches: [main, tts-uretim]
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      gruplar: ${{ steps.g.outputs.gruplar }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: g
+        run: echo "gruplar=$(cat gruplar.json)" >> "$GITHUB_OUTPUT"
+  tts:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        grup: ${{ fromJSON(needs.plan.outputs.gruplar) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: gereksinim.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: tts-modeller-v1
+      - name: Kur
+        run: pip install -q -r gereksinim.txt > /dev/null
+      - name: Calistir
+        env:
+          TTS_ANAHTAR: ${{ secrets.TTS_ANAHTAR }}
+        run: |
+          printf '%s' "$TTS_ANAHTAR" | tr -d '\r\n' > /tmp/k  # PowerShell ile konan secret sonuna CRLF ekleyebiliyor
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in is.enc -out /tmp/is.zip -pass file:/tmp/k
+          mkdir -p /tmp/is /tmp/cikti && (cd /tmp/is && unzip -q /tmp/is.zip)
+          BAS=$(date +%s)
+          if ! python tts_isci.py ${{ matrix.grup }} /tmp/is /tmp/cikti "$PWD/ref" > /dev/null 2>&1; then
+            echo "isci hatasi: $(cat /tmp/cikti/hata.txt 2>/dev/null)"; rm -f /tmp/k; exit 1
+          fi
+          echo "grup ${{ matrix.grup }}: $(( $(date +%s) - BAS )) sn"
+          (cd /tmp/cikti && zip -q -r /tmp/sonuc.zip .)
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in /tmp/sonuc.zip -out "sonuc-${{ matrix.grup }}.enc" -pass file:/tmp/k
+          rm -f /tmp/k
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sonuc-${{ matrix.grup }}
+          path: sonuc-${{ matrix.grup }}.enc
+          retention-days: 2
